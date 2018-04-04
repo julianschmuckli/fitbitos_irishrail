@@ -1,0 +1,258 @@
+import { geolocation } from "geolocation";
+import * as messaging from "messaging";
+import { locale } from "user-settings";
+import { settingsStorage } from "settings";
+
+import * as variables from "../common/variables.js";
+import * as util from "../common/utils.js";
+
+var index = 1;
+var current_favourite_number = -1;
+
+console.log("App started");
+
+var GPSoptions = {
+  enableHighAccuracy: false,
+  maximumAge: 60000
+};
+
+function locationError(error) {
+  console.log("Error fetching location");
+  sendResponse({error:true,message:"no_location"});
+}
+
+function getStations(position) {
+  var latitude, longitude;
+  
+  latitude = position.coords.latitude;
+  longitude = position.coords.longitude;
+  
+  //@Test
+  /*var location_chosen = 0;
+  latitude = [53.7471, 53.398299][location_chosen];
+  longitude = [-9.29730, -6.242622][location_chosen];*/
+  
+  console.log("Location: "+latitude+", "+longitude);
+  var url = variables.getURLStationNames(latitude, longitude);
+  console.log("Loading data from "+url);
+  fetch(url).then(function (response) {
+      response.text()
+      .then(function(data) {
+        var data = JSON.parse(data);
+        var searched_index = 0;
+        for(var i = 0;i<data["results"].length;i++){
+          if(data["results"][i]["id"]!=undefined){
+             searched_index++;
+          }
+          if(data["results"][i]["id"]!=undefined && searched_index >= index){
+            fetchStop(data["results"][i]["id"], data.results[i].name);
+            break;
+          }
+        }
+      });
+  })
+  .catch(function (err) {
+    console.log("Error fetching: " + err);
+  });
+}
+
+function getFavourite(setting){
+  try{
+    return fetchStop(setting.value, setting.name);
+  }catch(e){
+    console.log("Test:"+e);
+    return null;
+  }
+}
+
+function fetchStop(id, name){
+  var url2 = variables.getURLStationDetails(id);
+  console.log(url2);
+  fetch(url2)
+  .then(function (response2) {
+      response2.text()
+      .then(function(data2) {
+        var data2 = JSON.parse(data2);
+        var data_response = {
+          name: name,
+          to:[],
+          departures:[],
+          number:[],
+          operators:[],
+          platforms:[],
+          categories:[]
+        }
+
+        if(data2["objStationData"] instanceof Array){
+          for(var ia=0;ia<data2["objStationData"].length;ia++){
+            //console.log(ia+": "+data2["stationboard"][ia]["to"]);
+            try{
+              var departure = data2["objStationData"][ia]["Exparrival"];
+              if(departure == "00:00"){
+                departure = data2["objStationData"][ia]["Expdepart"];
+              }
+              var time = departure.split(":");
+
+              var departure = new Date();
+              departure.setHours(time[0]);
+              departure.setMinutes(time[1]);
+
+              data_response.to[ia] = data2["objStationData"][ia]["Destination"];
+              data_response.departures[ia] = departure.getTime()/1000;
+              data_response.number[ia] = data2["objStationData"][ia]["Traincode"].trim();
+              data_response.operators[ia] = data2["objStationData"][ia]["Traintype"].trim();
+              data_response.platforms[ia] = "";
+              data_response.categories[ia] = "";
+            }catch(e){
+              console.error(e.message);
+            }
+          }
+        }else{
+          var ia = 0;
+          try{
+            var departure = data2["objStationData"]["Exparrival"];
+            if(departure == "00:00"){
+              departure = data2["objStationData"]["Expdepart"];
+            }
+            var time = departure.split(":");
+
+            var departure = new Date();
+            departure.setHours(time[0]);
+            departure.setMinutes(time[1]);
+
+            data_response.to[ia] = data2["objStationData"]["Destination"];
+            data_response.departures[ia] = departure.getTime()/1000;
+            data_response.number[ia] = data2["objStationData"]["Traincode"].trim();
+            data_response.operators[ia] = data2["objStationData"]["Traintype"].trim();
+            data_response.platforms[ia] = "";
+            data_response.categories[ia] = "";
+          }catch(e){
+            console.error(e.message);
+          }
+        }
+        
+        data_response.settings = {};
+        data_response.settings.minutesFirst = settingsStorage.getItem("minutesFirst");
+
+        sendResponse(data_response);
+      });
+  }).catch(function (err) {
+    console.log("Error fetching data from internet: " + err);
+  });
+}
+
+function sendResponse(response){
+  if (messaging.peerSocket.readyState === messaging.peerSocket.OPEN) {
+    // Send a command to the device
+    console.log("Sending response");
+    console.log(response);
+    messaging.peerSocket.send(response);
+  } else {
+    console.log("Error: Connection is not open");
+  }
+}
+
+messaging.peerSocket.onopen = function() {
+  console.log("Socket open");
+}
+
+// Listen for messages from the device
+messaging.peerSocket.onmessage = function(evt) {
+  //Locations
+  if(evt.data.key=="changeStationDown" && evt.data.menu == 1){
+    index++;
+    geolocation.getCurrentPosition(getStations, locationError, GPSoptions);
+  }else if(evt.data.key=="changeStationUp" && evt.data.menu == 1){
+    index--;
+    geolocation.getCurrentPosition(getStations, locationError, GPSoptions);
+  } else if(evt.data.menu == 1){
+    index = 1;
+    geolocation.getCurrentPosition(getStations, locationError, GPSoptions);
+  }
+  //Favourites
+  else if(evt.data.key=="changeStationDown" && evt.data.menu == 0){
+    try{
+      getFavourite(JSON.parse(settingsStorage.getItem("favourite_2")));
+    }catch(e){
+      
+    }
+  }else if(evt.data.key=="changeStationUp" && evt.data.menu == 0){
+    try{
+      getFavourite(JSON.parse(settingsStorage.getItem("favourite_1")));
+    }catch(e){
+      
+    }
+  }else{
+    index = 1;
+    try{
+      getFavourite(JSON.parse(settingsStorage.getItem("favourite_1")));
+    }catch(e){
+      
+    }
+  }
+}
+
+// Listen for the onerror event
+messaging.peerSocket.onerror = function(err) {
+  // Handle any errors
+  console.log("Connection error: " + err.code + " - " + err.message);
+}
+
+/*
+----------------------------------
+--------  Settings  --------------
+----------------------------------
+*/
+
+translate(locale.language, "show_minutes_first","Zeige Minuten zuerst","Show minutes first");
+translate(locale.language, "other_settings","Andere Einstellungen","Other settings");
+
+translate(locale.language, "add_stop","Haltestelle hinzufügen","Add stop/station");
+translate(locale.language, "search_stops","Haltestelle suchen","Search stops/stations");
+
+translate(locale.language, "favourite_stops","Favorisierte Haltestellen","Favourite stops/stations");
+translate(locale.language, "first_favourite_stop","Erste Haltestelle","First stop/station");
+translate(locale.language, "second_favourite_stop","Zweite Haltestelle","Second stop/station");
+
+translate(locale.language, "favourite_stops_description","Lege hier fest, welche Haltestellen du unter Favoriten anzeigen möchtest.","Set here the stops/stations which you want to display in the favourite section.");
+
+settingsStorage.onchange = function(evt) {
+  if (evt.key === "searchStations"){
+    loadResults(evt.newValue);
+  }
+}
+
+function loadResults(value){
+  var autoValues = [];
+ 
+  var url = "https://api.schmuckli.net/fitbit_os/irish_rail_transport/find_location.php?name="+value;
+  fetch(url).then(function (response) {
+      response.text()
+      .then(function(data) {
+        var data = JSON.parse(data);
+        for(var i=0;i<data["results"].length;i++){
+          autoValues.push({name: data["results"][i]["name"],value: data["results"][i]["id"]});
+        }
+        settingsStorage.setItem('resultStations', JSON.stringify(autoValues));
+      });
+  });
+}
+
+function translate(current_language, key, value_de, value_en){
+  switch(current_language){
+    case 'de_DE':
+    case 'de_de':
+    case 'de-de':
+    case 'de-DE':
+    case 'de-CH':
+    case 'de-AT':
+    case 'de-De':
+    case 'de_De':
+      settingsStorage.setItem("t_"+key, value_de);
+      break;
+    default:
+      console.log(current_language);
+      settingsStorage.setItem("t_"+key, value_en);
+      break;
+  }
+}
